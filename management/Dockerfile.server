@@ -9,7 +9,6 @@ COPY server /app
 RUN mkdir -p /root/.cache/huggingface/hub/
 # Install mineru latest
 RUN python3 -m pip install -U 'mineru[core]' --break-system-packages
-RUN python3 -m pip install kiwipiepy
 
 # # Download models and update the configuration file
 RUN /bin/bash -c "mineru-models-download -s huggingface -m all"
