@@ -203,6 +203,8 @@ class FulltextQueryer:
                         max(tks_w[i - 1][1], tks_w[i][1]) * 2,
                     )
                 )
+            # Elasticsearch 쿼리 문자열에서 특수 문자를 이스케이프 처리
+            txt = FulltextQueryer.subSpecialChar(txt)
             if not q:
                 q.append(txt)
             query = " OR ".join(q)
