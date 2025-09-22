@@ -119,7 +119,7 @@ def chat(dialog, messages, stream=True, **kwargs):
     if "doc_ids" in messages[-1]:
         attachments = messages[-1]["doc_ids"]
 
-    # 跨语言检索现在在前端处理
+    # 다국어 검색은 이제 프론트엔드에서 처리됩니다
     if dialog.prompt_config.get("cross_language_search", False):
         logging.debug("Cross-language search is enabled, but translation is handled in frontend")
 
@@ -143,7 +143,7 @@ def chat(dialog, messages, stream=True, **kwargs):
     tts_mdl = None
     if prompt_config.get("tts"):
         tts_mdl = LLMBundle(dialog.tenant_id, LLMType.TTS)
-    # try to use sql if field mapping is good to go
+    # 필드 매핑이 준비된 경우 sql을 사용해 보세요
     if field_map:
         logging.debug("Use SQL to retrieval:{}".format(questions[-1]))
         ans = use_sql(questions[-1], field_map, dialog.tenant_id, chat_mdl, prompt_config.get("quote", True))
@@ -314,23 +314,48 @@ def chat(dialog, messages, stream=True, **kwargs):
         prompt += "\n\n### Query:\n%s" % " ".join(questions)
         prompt = f"{prompt}\n\n - Total: {total_time_cost:.1f}ms\n  - Check LLM: {check_llm_time_cost:.1f}ms\n  - Create retriever: {create_retriever_time_cost:.1f}ms\n  - Bind embedding: {bind_embedding_time_cost:.1f}ms\n  - Bind LLM: {bind_llm_time_cost:.1f}ms\n  - Tune question: {refine_question_time_cost:.1f}ms\n  - Bind reranker: {bind_reranker_time_cost:.1f}ms\n  - Generate keyword: {generate_keyword_time_cost:.1f}ms\n  - Retrieval: {retrieval_time_cost:.1f}ms\n  - Generate answer: {generate_result_time_cost:.1f}ms"
 
-        return {"answer": think + answer, "reference": refs, "prompt": re.sub(r"\n", "  \n", prompt), "created_at": time.time()}
+        # Create citation mapping
+        citation_mapping = []
+        if cited_chunk_indices:
+            # Sort indices for a deterministic output order
+            for i in sorted(list(map(int, cited_chunk_indices))):
+                if i < len(kbinfos["chunks"]):
+                    chunk_info = kbinfos["chunks"][i]
+                    chunk_id = chunk_info.get("chunk_id", chunk_info.get("id"))
+                    doc_id = chunk_info.get("doc_id")
+                    if chunk_id:
+                        citation_mapping.append({
+                            "citation_index": i,
+                            "chunk_id": chunk_id,
+                            "doc_id": doc_id
+                        })
+
+        result = {
+            "answer": think + answer,
+            "reference": refs,
+            "prompt": re.sub(r"\n", "  \n", prompt),
+            "created_at": time.time()
+        }
+        if citation_mapping:
+            result["citation_mapping"] = citation_mapping
+
+        return result
 
     if stream:
-        last_ans = ""  # 记录上一次返回的完整回答
-        answer = ""  # 当前累计的完整回答
+        last_ans = ""  # 마지막으로 반환된 전체 답변 기록
+        answer = ""  # 현재 누적된 전체 답변
         for ans in chat_mdl.chat_streamly(prompt + prompt4citation, msg[1:], gen_conf):
-            # 如果存在思考过程(thought)，移除相关标记
+            # 생각 과정(thought)이 있으면 관련 태그 제거
             if thought:
                 ans = re.sub(r"<think>.*</think>", "", ans, flags=re.DOTALL)
             answer = ans
-            # 计算新增的文本片段(delta)
+            # 새로 추가된 텍스트 조각(delta) 계산
             delta_ans = ans[len(last_ans) :]
-            # 如果新增token太少(小于16)，跳过本次返回(避免频繁发送小片段)
+            # 새로 추가된 토큰이 너무 적으면(16개 미만) 이번 반환은 건너뜁니다(작은 조각을 자주 보내는 것을 방지)
             if num_tokens_from_string(delta_ans) < 16:
                 continue
             last_ans = answer
-            # 返回当前累计回答(包含思考过程)+新增片段)
+            # 현재 누적된 답변(생각 과정 포함) + 새로 추가된 조각 반환
             yield {"answer": thought + answer, "reference": {}, "audio_binary": tts(tts_mdl, delta_ans)}
         delta_ans = answer[len(last_ans) :]
         if delta_ans:
@@ -419,7 +444,7 @@ Please write the SQL, only SQL, without any other explanations or text.
     doc_name_idx = set([ii for ii, c in enumerate(tbl["columns"]) if c["name"] == "docnm_kwd"])
     column_idx = [ii for ii in range(len(tbl["columns"])) if ii not in (docid_idx | doc_name_idx)]
 
-    # compose Markdown table
+    # 마크다운 테이블 작성
     columns = (
         "|" + "|".join([re.sub(r"(/.*|（[^（）]+）)", "", field_map.get(tbl["columns"][i]["name"], tbl["columns"][i]["name"])) for i in column_idx]) + ("|Source|" if docid_idx and docid_idx else "|")
     )
@@ -464,31 +489,31 @@ def tts(tts_mdl, text):
     return binascii.hexlify(bin).decode("utf-8")
 
 
-# 翻译相关函数已移至前端处理，这里不再需要
+# 번역 관련 함수는 프론트엔드에서 처리하도록 이동되었으므로 여기서는 더 이상 필요하지 않습니다
 
 
 def ask(question, kb_ids, tenant_id):
     """
-    处理用户搜索请求，从知识库中检索相关信息并生成回答
+    사용자 검색 요청을 처리하고, 지식 베이스에서 관련 정보를 검색하여 답변을 생성합니다
 
-    参数:
-        question (str): 用户的问题或查询
-        kb_ids (list): 知识库ID列表，指定要搜索的知识库
-        tenant_id (str): 租户ID，用于权限控制和资源隔离
+    매개변수:
+        question (str): 사용자의 질문 또는 쿼리
+        kb_ids (list): 검색할 지식 베이스를 지정하는 지식 베이스 ID 목록
+        tenant_id (str): 권한 제어 및 리소스 격리를 위한 테넌트 ID
 
-    流程:
-        1. 获取指定知识库的信息
-        2. 确定使用的嵌入模型
-        3. 根据知识库类型选择检索器(普通检索器或知识图谱检索器)
-        4. 初始化嵌入模型和聊天模型
-        5. 执行检索操作获取相关文档片段
-        6. 格式化知识库内容作为上下文
-        7. 构建系统提示词
-        8. 生成回答并添加引用标记
-        9. 流式返回生成的回答
+    프로세스:
+        1. 지정된 지식 베이스 정보 가져오기
+        2. 사용할 임베딩 모델 결정
+        3. 지식 베이스 유형에 따라 검색기 선택 (일반 검색기 또는 지식 그래프 검색기)
+        4. 임베딩 모델 및 채팅 모델 초기화
+        5. 검색 작업을 실행하여 관련 문서 조각 가져오기
+        6. 지식 베이스 내용을 컨텍스트로 형식화
+        7. 시스템 프롬프트 구성
+        8. 답변 생성 및 인용 태그 추가
+        9. 생성된 답변을 스트리밍으로 반환
 
-    返回:
-        generator: 生成器对象，产生包含回答和引用信息的字典
+    반환:
+        generator: 답변 및 인용 정보가 포함된 사전을 생성하는 제너레이터 객체
     """
 
     kbs = KnowledgebaseService.get_by_ids(kb_ids)
@@ -496,39 +521,39 @@ def ask(question, kb_ids, tenant_id):
 
     is_knowledge_graph = all([kb.parser_id == ParserType.KG for kb in kbs])
     retriever = settings.retrievaler if not is_knowledge_graph else settings.kg_retrievaler
-    # 初始化嵌入模型，用于将文本转换为向量表示
+    # 텍스트를 벡터 표현으로 변환하기 위한 임베딩 모델 초기화
     embd_mdl = LLMBundle(tenant_id, LLMType.EMBEDDING, embedding_list[0])
-    # 初始化聊天模型，用于生成回答
+    # 답변 생성을 위한 채팅 모델 초기화
     chat_mdl = LLMBundle(tenant_id, LLMType.CHAT)
-    # 获取聊天模型的最大token长度，用于控制上下文长度
+    # 컨텍스트 길이를 제어하기 위해 채팅 모델의 최대 토큰 길이 가져오기
     max_tokens = chat_mdl.max_length
-    # 获取所有知识库的租户ID并去重
+    # 모든 지식 베이스의 테넌트 ID를 가져와 중복 제거
     tenant_ids = list(set([kb.tenant_id for kb in kbs]))
-    # 设置更小的相似度阈值以适配更好的效果(原始值0.1)
+    # 더 나은 효과를 위해 더 작은 유사도 임계값 설정 (원래 값 0.1)
     similarity_threshold = 0.01
-    # 调用检索器检索相关文档片段
+    # 검색기를 호출하여 관련 문서 조각 검색
     kbinfos = retriever.retrieval(question, embd_mdl, tenant_ids, kb_ids, 1, 12, similarity_threshold, 0.3, aggs=False, rank_feature=label_question(question, kbs))
-    # 将检索结果格式化为提示词，并确保不超过模型最大token限制
+    # 검색 결과를 프롬프트로 형식화하고 모델의 최대 토큰 제한을 초과하지 않도록 보장
     knowledges = kb_prompt(kbinfos, max_tokens)
     prompt = """
-    角色：你是一个聪明的助手。  
-    任务：总结知识库中的信息并回答用户的问题。  
-    要求与限制：
-    - 绝不要捏造内容，尤其是数字。
-    - 如果知识库中的信息与用户问题无关，**只需回答：对不起，未提供相关信息。
-    - 使用Markdown格式进行回答。
-    - 使用用户提问所用的语言作答。
-    - 绝不要捏造内容，尤其是数字。
+    역할: 당신은 똑똑한 조수입니다.
+    작업: 지식 베이스의 정보를 요약하고 사용자의 질문에 답변합니다.
+    요구 사항 및 제한 사항:
+    - 절대로 내용을 조작하지 마십시오. 특히 숫자는 더욱 그렇습니다.
+    - 지식 베이스의 정보가 사용자의 질문과 관련이 없는 경우, **"죄송합니다, 관련 정보가 제공되지 않았습니다."라고만 답변하십시오.
+    - 답변은 마크다운 형식을 사용하십시오.
+    - 사용자가 질문한 언어로 답변하십시오.
+    - 절대로 내용을 조작하지 마십시오. 특히 숫자는 더욱 그렇습니다.
 
-    ### 来自知识库的信息
+    ### 지식 베이스 정보
     %s
 
-    以上是来自知识库的信息。
+    이상은 지식 베이스 정보입니다.
 
     """ % "\n".join(knowledges)
     msg = [{"role": "user", "content": question}]
 
-    # 生成完成后添加回答中的引用标记
+    # 생성 완료 후 답변에 인용 태그 추가
     def decorate_answer(answer):
         nonlocal knowledges, kbinfos, prompt
         answer, idx = retriever.insert_citations(answer, [ck["content_ltks"] for ck in kbinfos["chunks"]], [ck["vector"] for ck in kbinfos["chunks"]], embd_mdl, tkweight=0.7, vtweight=0.3)

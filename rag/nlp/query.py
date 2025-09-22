@@ -20,12 +20,15 @@ import re
 from rag.utils.doc_store_conn import MatchTextExpr
 
 from rag.nlp import rag_tokenizer, term_weight, synonym
+from rag.nlp.korean_tokenizer import KoreanTokenizer
 
+logger = logging.getLogger('ragflow.query')
 
 class FulltextQueryer:
     def __init__(self):
         self.tw = term_weight.Dealer()
         self.syn = synonym.Dealer()
+        self.korean_tokenizer = KoreanTokenizer()
         self.query_fields = [
             "title_tks^10",
             "title_sm_tks^5",
@@ -41,27 +44,63 @@ class FulltextQueryer:
         return re.sub(r"([:\{\}/\[\]\-\*\"\(\)\|\+~\^])", r"\\\1", line).strip()
 
     @staticmethod
+#    def isChinese(line):
+#        arr = re.split(r"[ \t]+", line)
+#        if len(arr) <= 3:
+#            return True
+#        e = 0
+#        for t in arr:
+#            if not re.match(r"[a-zA-Z]+$", t):
+#                e += 1
+#        return e * 1.0 / len(arr) >= 0.7
     def isChinese(line):
+        """
+        중국어(간체/번체) 문자를 직접 체크하여 중국어 여부를 판별합니다.
+        
+        알고리즘: 공백으로 분리된 토큰 중 중국어 문자(한자)를 포함하는 토큰의 비율이 30% 이상이면 중국어로 판단합니다.
+        중국어 유니코드 범위: 
+        - \u4e00-\u9fff: CJK 통합 한자
+        - \u3400-\u4dbf: CJK 확장 A
+        - \uf900-\ufaff: CJK 호환 한자
+        """
         arr = re.split(r"[ \t]+", line)
-        if len(arr) <= 3:
-            return True
-        e = 0
+        if not arr:
+            return False
+        chinese_count = 0
+        for token in arr:
+            # 중국어 문자(한자) 포함 여부 체크
+            if re.search(r"[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff]", token):
+                chinese_count += 1
+        return (chinese_count * 1.0 / len(arr)) >= 0.3
+
+    @staticmethod
+    def isKorean(line):
+        """
+        간단한 한국어 여부 판별기입니다.
+
+        알고리즘: 공백으로 분리된 토큰 중 한글(가-힣)을 포함하는 토큰의 비율이 30% 이상이면 한국어로 판단합니다.
+        이 방식은 혼합 텍스트에서도 한글 중심 여부를 빠르게 판별하는 데 적절합니다.
+        """
+        arr = re.split(r"[ \t]+", line)
+        if not arr:
+            return False
+        k = 0
         for t in arr:
-            if not re.match(r"[a-zA-Z]+$", t):
-                e += 1
-        return e * 1.0 / len(arr) >= 0.7
+            if re.search(r"[\uac00-\ud7a3]", t):
+                k += 1
+        return (k * 1.0 / len(arr)) >= 0.3
 
     @staticmethod
     def rmWWW(txt):
         """
-        移除文本中的WWW(WHAT、WHO、WHERE等疑问词)。
+        텍스트에서 WWW(WHAT, WHO, WHERE 등 의문사)를 제거합니다.
 
-        本函数通过一系列正则表达式模式来识别并替换文本中的疑问词，以简化文本或为后续处理做准备。
-        参数:
-        - txt: 待处理的文本字符串。
+        이 함수는 일련의 정규식 패턴을 통해 텍스트의 의문사를 식별하고 대체하여 텍스트를 단순화하거나 후속 처리를 준비합니다.
+        매개변수:
+        - txt: 처리할 텍스트 문자열.
 
-        返回:
-        - 处理后的文本字符串，如果所有疑问词都被移除且文本为空，则返回原始文本。
+        반환:
+        - 처리된 텍스트 문자열. 모든 의문사가 제거되어 텍스트가 비어 있으면 원본 텍스트를 반환합니다.
         """
         patts = [
             (
@@ -84,53 +123,59 @@ class FulltextQueryer:
     @staticmethod
     def add_space_between_eng_zh(txt):
         """
-        在英文和中文之间添加空格。
+        영어와 중국어 사이에 공백을 추가합니다.
 
-        该函数通过正则表达式匹配文本中英文和中文相邻的情况，并在它们之间插入空格。
-        这样做可以改善文本的可读性，特别是在混合使用英文和中文时。
+        이 함수는 정규식을 통해 텍스트에서 영어와 중국어가 인접한 경우를 찾아 그 사이에 공백을 삽입합니다.
+        이렇게 하면 특히 영어와 중국어가 혼용될 때 텍스트의 가독성을 향상시킬 수 있습니다.
 
-        参数:
-        txt (str): 需要处理的文本字符串。
+        매개변수:
+        txt (str): 처리할 텍스트 문자열.
 
-        返回:
-        str: 处理后的文本字符串，其中英文和中文之间添加了空格。
+        반환:
+        str: 영어와 중국어 사이에 공백이 추가된 처리된 텍스트 문자열.
         """
-        # (ENG/ENG+NUM) + ZH
+        # (영문/영문+숫자) + 중문
         txt = re.sub(r"([A-Za-z]+[0-9]+)([\u4e00-\u9fa5]+)", r"\1 \2", txt)
-        # ENG + ZH
+        # 영문 + 중문
         txt = re.sub(r"([A-Za-z])([\u4e00-\u9fa5]+)", r"\1 \2", txt)
-        # ZH + (ENG/ENG+NUM)
+        # 중문 + (영문/영문+숫자)
         txt = re.sub(r"([\u4e00-\u9fa5]+)([A-Za-z]+[0-9]+)", r"\1 \2", txt)
         txt = re.sub(r"([\u4e00-\u9fa5]+)([A-Za-z])", r"\1 \2", txt)
         return txt
 
     def question(self, txt, tbl="qa", min_match: float = 0.6):
         """
-        根据输入的文本生成查询表达式，用于在数据库中匹配相关问题。
+        입력된 텍스트를 기반으로 데이터베이스에서 관련 질문을 매칭하기 위한 쿼리 표현식을 생성합니다.
 
-        参数:
-        - txt (str): 输入的文本。
-        - tbl (str): 数据表名，默认为"qa"。
-        - min_match (float): 最小匹配度，默认为0.6。
+        매개변수:
+        - txt (str): 입력 텍스트.
+        - tbl (str): 데이터 테이블 이름, 기본값 "qa".
+        - min_match (float): 최소 매칭 유사도, 기본값 0.6.
 
-        返回:
-        - MatchTextExpr: 生成的查询表达式对象。
-        - keywords (list): 提取的关键词列表。
+        반환:
+        - MatchTextExpr: 생성된 쿼리 표현식 객체.
+        - keywords (list): 추출된 키워드 리스트.
         """
-        txt = FulltextQueryer.add_space_between_eng_zh(txt)  # 在英文和中文之间添加空格
-        # 使用正则表达式替换特殊字符为单个空格，并将文本转换为简体中文和小写
-        txt = re.sub(
-            r"[ :|\r\n\t,，。？?/`!！&^%%()\[\]{}<>]+",
-            " ",
-            rag_tokenizer.tradi2simp(rag_tokenizer.strQ2B(txt.lower())),
-        ).strip()
-        otxt = txt
-        txt = FulltextQueryer.rmWWW(txt)
+        if self.isChinese(txt):
+            txt = FulltextQueryer.add_space_between_eng_zh(txt)  # 영어와 중국어 사이에 공백 추가
+            # 정규식을 사용하여 특수 문자를 단일 공백으로 바꾸고, 텍스트를 간체 중국어와 소문자로 변환
+            txt = re.sub(
+                r"[ :|\r\n\t,，。？?/`!！&^%%()\[\]{}<>]+",
+                " ",
+                rag_tokenizer.tradi2simp(rag_tokenizer.strQ2B(txt.lower())),
+            ).strip()
+            otxt = txt
+            txt = FulltextQueryer.rmWWW(txt)
 
-        # 如果文本不是中文，则进行英文处理
+        # 텍스트가 중국어가 아니면 영어/한국어 등 비중국어 처리
         if not self.isChinese(txt):
             txt = FulltextQueryer.rmWWW(txt)
-            tks = rag_tokenizer.tokenize(txt).split()
+            # 한글이 포함된 경우에는 한국어 전용 토크나이저를 사용
+            # 한글이 포함된 경우에는 한국어 전용 토크나이저를 사용
+            if self.isKorean(txt):
+                tks = self.korean_tokenizer.tokenize(txt)
+            else:
+                tks = rag_tokenizer.tokenize(txt).split()
             keywords = [t for t in tks if t]
             tks_w = self.tw.weights(tks, preprocess=False)
             tks_w = [(re.sub(r"[ \\\"'^]", "", tk), w) for tk, w in tks_w]
@@ -160,54 +205,56 @@ class FulltextQueryer:
                 )
             if not q:
                 q.append(txt)
-            query = " ".join(q)
+            query = " OR ".join(q)
+            query = f'("{txt}"^2.00) OR ({query})'
+            logger.info(f'query: {query}')
             return MatchTextExpr(self.query_fields, query, 100), keywords
 
         def need_fine_grained_tokenize(tk):
             """
-            判断是否需要对词进行细粒度分词。
+            단어를 세분화된 토큰으로 나눌 필요가 있는지 판단합니다.
 
-            参数:
-            - tk (str): 待判断的词。
+            매개변수:
+            - tk (str): 판단할 단어.
 
-            返回:
-            - bool: 是否需要进行细粒度分词。
+            반환:
+            - bool: 세분화된 토큰화가 필요한지 여부.
             """
-            # 长度小于3的词不处理
+            # 길이가 3 미만인 단어는 처리하지 않음
             if len(tk) < 3:
                 return False
-            # 匹配特定模式的词不处理（如数字、字母、符号组合）
+            # 특정 패턴(예: 숫자, 영문자, 기호 조합)과 일치하는 단어는 처리하지 않음
             if re.match(r"[0-9a-z\.\+#_\*-]+$", tk):
                 return False
             return True
 
         txt = FulltextQueryer.rmWWW(txt)
         qs, keywords = [], []
-        # 遍历文本分割后的前256个片段（防止处理过长文本）
-        for tt in self.tw.split(txt)[:256]:  # 注：这个split似乎是对英文设计，中文不起作用
+        # 텍스트 분할 후 앞 256개 조각을 순회 (너무 긴 텍스트 처리 방지)
+        for tt in self.tw.split(txt)[:256]:  # 참고: 이 split은 영어용으로 설계된 것으로 보이며, 중국어에는 작동하지 않음
             if not tt:
                 continue
-            # 将当前片段加入关键词列表
+            # 현재 조각을 키워드 목록에 추가
             keywords.append(tt)
-            # 获取当前片段的权重
+            # 현재 조각의 가중치 가져오기
             twts = self.tw.weights([tt])
-            # 查找同义词
+            # 동의어 찾기
             syns = self.syn.lookup(tt)
-            # 如果有同义词且关键词数量未超过32，将同义词加入关键词列表
+            # 동의어가 있고 키워드 수가 32개를 넘지 않으면 동의어를 키워드 목록에 추가
             if syns and len(keywords) < 32:
                 keywords.extend(syns)
-            # 调试日志：输出权重信息
+            # 디버그 로그: 가중치 정보 출력
             logging.debug(json.dumps(twts, ensure_ascii=False))
-            # 初始化查询条件列表
+            # 쿼리 조건 목록 초기화
             tms = []
-            # 按权重降序排序处理每个token
+            # 각 토큰을 가중치 내림차순으로 정렬하여 처리
             for tk, w in sorted(twts, key=lambda x: x[1] * -1):
-                # 如果需要细粒度分词，则进行分词处理
+                # 세분화된 토큰화가 필요한 경우, 토큰화 진행
                 sm = rag_tokenizer.fine_grained_tokenize(tk).split() if need_fine_grained_tokenize(tk) else []
-                # 对每个分词结果进行清洗：
-                # 1. 去除标点符号和特殊字符
-                # 2. 使用subSpecialChar进一步处理
-                # 3. 过滤掉长度<=1的词
+                # 각 토큰화 결과 정제:
+                # 1. 구두점 및 특수 문자 제거
+                # 2. subSpecialChar를 사용하여 추가 처리
+                # 3. 길이가 1 이하인 단어 필터링
                 sm = [
                     re.sub(
                         r"[ ,\./;'\[\]\\`~!@#$%\^&\*\(\)=\+_<>\?:\"\{\}\|，。；‘’【】、！￥……（）——《》？：“”-]+",
@@ -219,29 +266,29 @@ class FulltextQueryer:
                 sm = [FulltextQueryer.subSpecialChar(m) for m in sm if len(m) > 1]
                 sm = [m for m in sm if len(m) > 1]
 
-                # 如果关键词数量未达上限，添加处理后的token和分词结果
+                # 키워드 수가 상한에 도달하지 않은 경우, 처리된 토큰과 토큰화 결과 추가
                 if len(keywords) < 32:
-                    keywords.append(re.sub(r"[ \\\"']+", "", tk))  # 去除转义字符
-                    keywords.extend(sm)  # 添加分词结果
-                # 获取当前token的同义词并进行处理
+                    keywords.append(re.sub(r"[ \\\"']+", "", tk))  # 이스케이프 문자 제거
+                    keywords.extend(sm)  # 토큰화 결과 추가
+                # 현재 토큰의 동의어를 가져와 처리
                 tk_syns = self.syn.lookup(tk)
                 tk_syns = [FulltextQueryer.subSpecialChar(s) for s in tk_syns]
-                # 添加有效同义词到关键词列表
+                # 유효한 동의어를 키워드 목록에 추가
                 if len(keywords) < 32:
                     keywords.extend([s for s in tk_syns if s])
-                # 对同义词进行分词处理，并为包含空格的同义词添加引号
+                # 동의어를 토큰화하고, 공백이 포함된 동의어에 따옴표 추가
                 tk_syns = [rag_tokenizer.fine_grained_tokenize(s) for s in tk_syns if s]
                 tk_syns = [f'"{s}"' if s.find(" ") > 0 else s for s in tk_syns]
 
-                # 关键词数量达到上限则停止处理
+                # 키워드 수가 상한에 도달하면 처리 중지
                 if len(keywords) >= 32:
                     break
 
-                # 处理当前token用于构建查询条件：
-                # 1. 特殊字符处理
-                # 2. 为包含空格的token添加引号
-                # 3. 如果有同义词，构建OR条件并降低权重
-                # 4. 如果有分词结果，添加OR条件
+                # 쿼리 조건 구성을 위해 현재 토큰 처리:
+                # 1. 특수 문자 처리
+                # 2. 공백이 포함된 토큰에 따옴표 추가
+                # 3. 동의어가 있으면 OR 조건을 구성하고 가중치 낮춤
+                # 4. 토큰화 결과가 있으면 OR 조건 추가
                 tk = FulltextQueryer.subSpecialChar(tk)
                 if tk.find(" ") > 0:
                     tk = '"%s"' % tk
@@ -252,31 +299,31 @@ class FulltextQueryer:
                 if tk.strip():
                     tms.append((tk, w))
 
-            # 将处理后的查询条件按权重组合成字符串
+            # 처리된 쿼리 조건을 가중치에 따라 문자열로 조합
             tms = " ".join([f"({t})^{w}" for t, w in tms])
 
-            # 如果有多个权重项，添加短语搜索条件（提高相邻词匹配的权重）
+            # 가중치 항목이 여러 개일 경우, 구문 검색 조건 추가 (인접 단어 매칭 가중치 높임)
             if len(twts) > 1:
                 tms += ' ("%s"~2)^1.5' % rag_tokenizer.tokenize(tt)
 
-            # 处理同义词的查询条件
+            # 동의어 쿼리 조건 처리
             syns = " OR ".join(['"%s"' % rag_tokenizer.tokenize(FulltextQueryer.subSpecialChar(s)) for s in syns])
-            # 组合主查询条件和同义词条件
+            # 주 쿼리 조건과 동의어 조건 조합
             if syns and tms:
                 tms = f"({tms})^5 OR ({syns})^0.7"
-            # 将最终查询条件加入列表
+            # 최종 쿼리 조건을 목록에 추가
             qs.append(tms)
 
-        # 处理所有查询条件
+        # 모든 쿼리 조건 처리
         if qs:
-            # 组合所有查询条件为OR关系
+            # 모든 쿼리 조건을 OR 관계로 조합
             query = " OR ".join([f"({t})" for t in qs if t])
-            # 如果查询条件为空，使用原始文本
+            # 쿼리 조건이 비어 있으면 원본 텍스트 사용
             if not query:
                 query = otxt
-            # 返回匹配文本表达式和关键词
+            # 텍스트 표현식과 키워드 매칭 반환
             return MatchTextExpr(self.query_fields, query, 100, {"minimum_should_match": min_match}), keywords
-        # 如果没有生成查询条件，只返回关键词
+        # 생성된 쿼리 조건이 없으면 키워드만 반환
         return None, keywords
 
     def hybrid_similarity(self, avec, bvecs, atks, btkss, tkweight=0.3, vtweight=0.7):

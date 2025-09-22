@@ -67,43 +67,43 @@ class Dealer:
 
     def search(self, req, idx_names: str | list[str], kb_ids: list[str], emb_mdl=None, highlight=False, rank_feature: dict | None = None):
         """
-        执行混合检索（全文检索+向量检索）
+        혼합 검색 실행 (전문 검색 + 벡터 검색)
 
-        参数:
-            req: 请求参数字典，包含：
-                - page: 页码
-                - topk: 返回结果最大数量
-                - size: 每页大小
-                - fields: 指定返回字段
-                - question: 查询问题文本
-                - similarity: 向量相似度阈值
-            idx_names: 索引名称或列表
-            kb_ids: 知识库ID列表
-            emb_mdl: 嵌入模型，用于向量检索
-            highlight: 是否返回高亮内容
-            rank_feature: 排序特征配置
+        매개변수:
+            req: 요청 매개변수 딕셔너리, 포함사항:
+                - page: 페이지 번호
+                - topk: 반환 결과 최대 수량
+                - size: 페이지당 크기
+                - fields: 지정 반환 필드
+                - question: 질의 문제 텍스트
+                - similarity: 벡터 유사도 임계값
+            idx_names: 인덱스 이름 또는 목록
+            kb_ids: 지식베이스 ID 목록
+            emb_mdl: 임베딩 모델, 벡터 검색용
+            highlight: 하이라이트 내용 반환 여부
+            rank_feature: 순위 특성 설정
 
-        返回:
-            SearchResult对象，包含：
-                - total: 匹配总数
-                - ids: 匹配的chunk ID列表
-                - query_vector: 查询向量
-                - field: 各chunk的字段值
-                - highlight: 高亮内容
-                - aggregation: 聚合结果
-                - keywords: 提取的关键词
+        반환:
+            SearchResult 객체, 포함사항:
+                - total: 매칭 총수
+                - ids: 매칭된 chunk ID 목록
+                - query_vector: 질의 벡터
+                - field: 각 chunk의 필드값
+                - highlight: 하이라이트 내용
+                - aggregation: 집계 결과
+                - keywords: 추출된 키워드
         """
-        # 1. 初始化过滤条件和排序规则
+        # 1. 필터 조건과 정렬 규칙 초기화
         filters = self.get_filters(req)
         orderBy = OrderByExpr()
 
-        # 2. 处理分页参数
+        # 2. 페이징 매개변수 처리
         pg = int(req.get("page", 1)) - 1
         topk = int(req.get("topk", 1024))
         ps = int(req.get("size", topk))
         offset, limit = pg * ps, ps
 
-        # 3. 设置返回字段（默认包含文档名、内容等核心字段）
+        # 3. 반환 필드 설정 (기본적으로 문서명, 내용 등 핵심 필드 포함)
         src = req.get(
             "fields",
             [
@@ -127,14 +127,15 @@ class Dealer:
                 TAG_FLD,
             ],
         )
-        kwds = set([])  # 初始化关键词集合
+        kwds = set([])  # 키워드 집합 초기화
+        #kwds = list()  # 키워드 집합 초기화
 
-        # 4. 处理查询问题
-        qst = req.get("question", "")  # 获取查询问题文本
-        print(f"收到前端问题：{qst}")
-        q_vec = []  # 初始化查询向量（如需向量检索）
+        # 4. 질의 문제 처리
+        qst = req.get("question", "")  # 질의 문제 텍스트 획득
+        logging.info(f"수신된 프론트엔드 질의: {qst}")
+        q_vec = []  # 질의 벡터 초기화 (벡터 검색 필요시)
         if not qst:
-            # 4.1 若查询文本为空，执行默认排序检索（通常用于无搜索条件浏览）(注：前端测试检索时会禁止空文本的提交)
+            # 4.1 질의 텍스트가 비어있으면 기본 정렬 검색 실행 (보통 검색 조건이 없는 브라우징용) (주: 프론트엔드 테스트 검색시 빈 텍스트 제출 금지)
             if req.get("sort"):
                 orderBy.asc("page_num_int")
                 orderBy.asc("top_int")
@@ -143,59 +144,61 @@ class Dealer:
             total = self.dataStore.getTotal(res)
             logging.debug("Dealer.search TOTAL: {}".format(total))
         else:
-            # 4.2 若存在查询文本，进入全文/混合检索流程
-            highlightFields = ["content_ltks", "title_tks"] if highlight else []  # highlight当前会一直为False，不起作用
-            # 4.2.1 生成全文检索表达式和关键词
-            matchText, keywords = self.qryr.question(qst, min_match=0.3)
-            print(f"matchText.matching_text: {matchText.matching_text}")
-            print(f"keywords: {keywords}\n")
+            # 4.2 질의 텍스트가 존재하면 전문/혼합 검색 흐름 진입
+            highlightFields = ["content_ltks", "title_tks", "question_kwd"] if highlight else []  # highlight는 현재 항상 False로 작동하지 않음
+            # 4.2.1 전문 검색 표현식과 키워드 생성
+            matchText, keywords = self.qryr.question(qst, min_match=0.1)
+            logging.debug(f"matchText.matching_text: {matchText.matching_text}")
+            logging.info(f"keywords: {keywords}\n")
             if emb_mdl is None:
-                # 4.2.2 纯全文检索模式 （未提供向量模型，正常情况不会进入）
+                # 4.2.2 순수 전문 검색 모드 (벡터 모델이 제공되지 않음, 정상 상황에서는 진입하지 않음)
                 matchExprs = [matchText]
                 res = self.dataStore.search(src, highlightFields, filters, matchExprs, orderBy, offset, limit, idx_names, kb_ids, rank_feature=rank_feature)
                 total = self.dataStore.getTotal(res)
                 logging.debug("Dealer.search TOTAL: {}".format(total))
             else:
-                # 4.2.3 混合检索模式（全文+向量）
-                # 生成查询向量
+                # 4.2.3 혼합 검색 모드 (전문+벡터)
+                # 질의 벡터 생성
                 matchDense = self.get_vector(qst, emb_mdl, topk, req.get("similarity", 0.1))
                 q_vec = matchDense.embedding_data
-                # 在返回字段中加入查询向量字段
+                # 반환 필드에 질의 벡터 필드 추가
                 src.append(f"q_{len(q_vec)}_vec")
-                # 创建融合表达式：设置向量匹配为95%，全文为5%
+                # 융합 표현식 생성: 벡터 매칭 95%, 전문 5% 설정
                 fusionExpr = FusionExpr("weighted_sum", topk, {"weights": "0.05, 0.95"})
-                # 构建混合查询表达式
+#                fusionExpr = FusionExpr("weighted_sum", topk, {"weights": "0.3, 0.7"})
+                # 혼합 질의 표현식 구축
                 matchExprs = [matchText, matchDense, fusionExpr]
 
-                # 执行混合检索
+                # 혼합 검색 실행
                 res = self.dataStore.search(src, highlightFields, filters, matchExprs, orderBy, offset, limit, idx_names, kb_ids, rank_feature=rank_feature)
                 total = self.dataStore.getTotal(res)
                 logging.debug("Dealer.search TOTAL: {}".format(total))
+                logging.info(f"총 조회된 정보: {total}건")
+                # print(f"질의 정보 결과: {res}\n")
 
-                print(f"共查询到: {total} 条信息")
-                # print(f"查询信息结果: {res}\n")
-
-                # 若未找到结果，则尝试降低匹配门槛后重试
-                if total == 0:
+                # 결과를 찾지 못했으면 매칭 임계값을 낮춰서 재시도
+                #if total == 0:
+                if total < 10:
                     if filters.get("doc_id"):
-                        # 有特定文档ID时执行无条件查询
+                        # 특정 문서 ID가 있을 때 무조건 질의 실행
                         res = self.dataStore.search(src, [], filters, [], orderBy, offset, limit, idx_names, kb_ids)
                         total = self.dataStore.getTotal(res)
-                        print(f"针对选中文档，共查询到: {total} 条信息")
-                        # print(f"查询信息结果: {res}\n")
+                        logging.info(f"선택된 문서 대상, 총 조회된 정보: {total}건")
+                        # print(f"질의 정보 결과: {res}\n")
                     else:
-                        # 否则调整全文和向量匹配参数再次搜索
+                        # 그렇지 않으면 전문과 벡터 매칭 매개변수를 조정하여 재검색
                         matchText, _ = self.qryr.question(qst, min_match=0.1)
                         filters.pop("doc_id", None)
                         matchDense.extra_options["similarity"] = 0.17
                         res = self.dataStore.search(src, highlightFields, filters, [matchText, matchDense, fusionExpr], orderBy, offset, limit, idx_names, kb_ids, rank_feature=rank_feature)
                         total = self.dataStore.getTotal(res)
                         logging.debug("Dealer.search 2 TOTAL: {}".format(total))
-                        print(f"再次查询，共查询到: {total} 条信息")
-                        # print(f"查询信息结果: {res}\n")
+                        logging.info(f"재질의, 총 조회된 정보: {total}건")
+                        # print(f"질의 정보 결과: {res}\n")
 
-            # 4.3 处理关键词（对关键词进行更细粒度的切词）
+            # 4.3 키워드 처리 (키워드에 대해 더 세분화된 분할 실행)
             for k in keywords:
+                #kwds.append(k)
                 kwds.add(k)
                 for kk in rag_tokenizer.fine_grained_tokenize(k).split():
                     if len(kk) < 2:
@@ -204,12 +207,12 @@ class Dealer:
                         continue
                     kwds.add(kk)
 
-        # 5. 提取检索结果中的ID、字段、聚合和高亮信息
+        # 5. 검색 결과에서 ID, 필드, 집계 및 하이라이트 정보 추출
         logging.debug(f"TOTAL: {total}")
-        ids = self.dataStore.getChunkIds(res)  # 提取匹配chunk的ID
-        keywords = list(kwds)  # 转为列表格式返回
-        highlight = self.dataStore.getHighlight(res, keywords, "content_with_weight")  # 获取高亮内容
-        aggs = self.dataStore.getAggregation(res, "docnm_kwd")  # 执行基于文档名的聚合分析
+        ids = self.dataStore.getChunkIds(res)  # 매칭된 chunk의 ID 추출
+        keywords = list(kwds)  # 리스트 형식으로 변환하여 반환
+        highlight = self.dataStore.getHighlight(res, keywords, "content_with_weight")  # 하이라이트 내용 획득
+        aggs = self.dataStore.getAggregation(res, "docnm_kwd")  # 문서명 기반 집계 분석 실행
         return self.SearchResult(total=total, ids=ids, query_vector=q_vec, aggregation=aggs, highlight=highlight, field=self.dataStore.getFields(res, src), keywords=keywords)
 
     @staticmethod
@@ -319,31 +322,31 @@ class Dealer:
 
     def rerank(self, sres, query, tkweight=0.3, vtweight=0.7, cfield="content_ltks", rank_feature: dict | None = None):
         """
-        对初步检索到的结果 (sres) 进行重排序。
+        초기 검색 결과 (sres)에 대해 재순위 정렬을 수행합니다.
 
-        该方法结合了多种相似度/特征来计算每个结果的新排序分数：
-        1. 文本相似度 (Token Similarity): 基于查询关键词与文档内容的词元匹配。
-        2. 向量相似度 (Vector Similarity): 基于查询向量与文档向量的余弦相似度。
-        3. 排序特征分数 (Rank Feature Scores): 如文档的 PageRank 值或与查询相关的标签特征得分。
+        이 방법은 여러 유사도/특성을 결합하여 각 결과의 새로운 순위 점수를 계산합니다:
+        1. 텍스트 유사도 (Token Similarity): 질의 키워드와 문서 내용의 토큰 매칭 기반.
+        2. 벡터 유사도 (Vector Similarity): 질의 벡터와 문서 벡터의 코사인 유사도 기반.
+        3. 순위 특성 점수 (Rank Feature Scores): 문서의 PageRank 값이나 질의 관련 태그 특성 점수.
 
-        最终的排序分数是这几种分数的加权组合（或直接相加）。
+        최종 순위 점수는 이러한 여러 점수의 가중 조합(또는 직접 합산)입니다.
 
         Args:
-            sres (SearchResult): 初步检索的结果对象，包含查询向量、文档ID、字段内容等。
-            query (str): 原始用户查询字符串。
-            tkweight (float): 文本相似度在混合相似度计算中的权重。
-            vtweight (float): 向量相似度在混合相似度计算中的权重。
-            cfield (str): 用于提取主要文本内容以进行词元匹配的字段名，默认为 "content_ltks"。
-            rank_feature (dict | None): 用于计算排序特征分数的查询侧特征，
-                                        例如 {PAGERANK_FLD: 10} 表示 PageRank 权重，
-                                        或包含其他标签及其权重的字典。
+            sres (SearchResult): 초기 검색 결과 객체, 질의 벡터, 문서 ID, 필드 내용 등 포함.
+            query (str): 원본 사용자 질의 문자열.
+            tkweight (float): 혼합 유사도 계산에서 텍스트 유사도의 가중치.
+            vtweight (float): 혼합 유사도 계산에서 벡터 유사도의 가중치.
+            cfield (str): 토큰 매칭을 위한 주요 텍스트 내용 추출용 필드명, 기본값 "content_ltks".
+            rank_feature (dict | None): 순위 특성 점수 계산용 질의측 특성,
+                                        예: {PAGERANK_FLD: 10}는 PageRank 가중치를 의미,
+                                        또는 기타 태그 및 가중치를 포함한 딕셔너리.
 
         Returns:
             tuple[np.ndarray, np.ndarray, np.ndarray]:
-                - sim (np.ndarray): 每个文档的最终重排序分数 (混合相似度 + 排序特征分数)。
-                - tksim (np.ndarray): 每个文档的纯文本相似度分数。
-                - vtsim (np.ndarray): 每个文档的纯向量相似度分数。
-                如果初步检索结果为空 (sres.ids is empty)，则返回三个空列表。
+                - sim (np.ndarray): 각 문서의 최종 재순위 점수 (혼합 유사도 + 순위 특성 점수).
+                - tksim (np.ndarray): 각 문서의 순수 텍스트 유사도 점수.
+                - vtsim (np.ndarray): 각 문서의 순수 벡터 유사도 점수.
+                초기 검색 결과가 비어있으면 (sres.ids is empty), 세 개의 빈 리스트를 반환.
         """
         _, keywords = self.qryr.question(query)
         vector_size = len(sres.query_vector)
@@ -419,37 +422,37 @@ class Dealer:
         rank_feature: dict | None = {PAGERANK_FLD: 10},
     ):
         """
-        执行检索操作，根据问题查询相关文档片段
+        검색 작업을 실행하여 문제에 따라 관련 문서 조각을 질의
 
-        参数说明:
-        - question: 用户输入的查询问题
-        - embd_mdl: 嵌入模型，用于将文本转换为向量
-        - tenant_ids: 租户ID，可以是字符串或列表
-        - kb_ids: 知识库ID列表
-        - page: 当前页码
-        - page_size: 每页结果数量
-        - similarity_threshold: 相似度阈值，低于此值的结果将被过滤
-        - vector_similarity_weight: 向量相似度权重
-        - top: 检索的最大结果数
-        - doc_ids: 文档ID列表，用于限制检索范围
-        - aggs: 是否聚合文档信息
-        - rerank_mdl: 重排序模型
-        - highlight: 是否高亮匹配内容
-        - rank_feature: 排序特征，如PageRank值
+        매개변수 설명:
+        - question: 사용자 입력 질의 문제
+        - embd_mdl: 임베딩 모델, 텍스트를 벡터로 변환하는 데 사용
+        - tenant_ids: 테넌트 ID, 문자열 또는 리스트 가능
+        - kb_ids: 지식베이스 ID 리스트
+        - page: 현재 페이지 번호
+        - page_size: 페이지당 결과 수량
+        - similarity_threshold: 유사도 임계값, 이 값보다 낮은 결과는 필터링됨
+        - vector_similarity_weight: 벡터 유사도 가중치
+        - top: 검색 최대 결과 수
+        - doc_ids: 문서 ID 리스트, 검색 범위 제한용
+        - aggs: 문서 정보 집계 여부
+        - rerank_mdl: 재순위 모델
+        - highlight: 매칭 내용 하이라이트 여부
+        - rank_feature: 순위 특성, PageRank 값 등
 
-        返回:
-        包含检索结果的字典，包括总数、文档片段和文档聚合信息
+        반환:
+        검색 결과를 포함한 딕셔너리, 총수, 문서 조각 및 문서 집계 정보 포함
         """
-        # 初始化结果字典
+        # 결과 딕셔너리 초기화
         ranks = {"total": 0, "chunks": [], "doc_aggs": {}}
         if not question:
             return ranks
-        # 设置重排序页面限制
+        # 재순위 페이지 제한 설정
         RERANK_LIMIT = 64
         RERANK_LIMIT = int(RERANK_LIMIT // page_size + ((RERANK_LIMIT % page_size) / (page_size * 1.0) + 0.5)) * page_size if page_size > 1 else 1
         if RERANK_LIMIT < 1:
             RERANK_LIMIT = 1
-        # 构建检索请求参数
+        # 검색 요청 매개변수 구축
         req = {
             "kb_ids": kb_ids,
             "doc_ids": doc_ids,
@@ -462,19 +465,19 @@ class Dealer:
             "available_int": 1,
         }
 
-        # 处理租户ID格式
+        # 테넌트 ID 형식 처리
         if isinstance(tenant_ids, str):
             tenant_ids = tenant_ids.split(",")
 
-        # 执行搜索操作
+        # 검색 작업 실행
         sres = self.search(req, [index_name(tid) for tid in tenant_ids], kb_ids, embd_mdl, highlight, rank_feature=rank_feature)
 
-        # 执行重排序操作
+        # 재순위 작업 실행
         if rerank_mdl and sres.total > 0:
             sim, tsim, vsim = self.rerank_by_model(rerank_mdl, sres, question, 1 - vector_similarity_weight, vector_similarity_weight, rank_feature=rank_feature)
         else:
             sim, tsim, vsim = self.rerank(sres, question, 1 - vector_similarity_weight, vector_similarity_weight, rank_feature=rank_feature)
-        # Already paginated in search function
+        # 검색 함수에서 이미 페이지네이션됨
         idx = np.argsort(sim * -1)[(page - 1) * page_size : page * page_size]
 
         dim = len(sres.query_vector)

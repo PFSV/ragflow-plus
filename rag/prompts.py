@@ -156,10 +156,10 @@ def kb_prompt(kbinfos, max_tokens):
 
     knowledges = []
     for nm, cks_meta in doc2chunks.items():
-        txt = f"\n文档: {nm} \n"
+        txt = f"\nDocument: {nm} \n"
         for k, v in cks_meta["meta"].items():
             txt += f"{k}: {v}\n"
-        txt += "相关片段如下:\n"
+        txt += "Related chunks are as follows:\n"
         for i, chunk in enumerate(cks_meta["chunks"], 1):
             txt += f"{chunk}\n"
         knowledges.append(txt)
@@ -168,44 +168,44 @@ def kb_prompt(kbinfos, max_tokens):
 
 def citation_prompt():
     return """
-# 引用要求:
-- 以格式 '##i$$ ##j$$'插入引用，其中 i, j 是所引用内容的 ID，并用 '##' 和 '$$' 包裹。
-- 在句子末尾插入引用，每个句子最多 4 个引用。
-- 如果答案内容不来自检索到的文本块，则不要插入引用。
-- 不要使用独立的文档 ID（例如 `#ID#`）。 
-- 在任何情况下，不得使用其他引用样式或格式（例如 `~~i==`、`[i]`、`(i)` 等）。 
-- 引用必须始终使用 `##i$$` 格式。
-- 任何未能遵守上述规则的情况，包括但不限于格式错误、使用禁止的样式或不支持的引用，都将被视为错误，应跳过为该句添加引用。
+# Citation Requirements:
+- Insert citations in the format '##i$$ ##j$$', where i and j are the IDs of the cited content, enclosed by '##' and '$$'.
+- Insert citations at the end of the sentence, with a maximum of 4 citations per sentence.
+- Do not insert citations if the answer content does not come from the retrieved text blocks.
+- Do not use standalone document IDs (e.g., `#ID#`).
+- Under no circumstances should other citation styles or formats be used (e.g., `~~i==`, `[i]`, `(i)`, etc.).
+- Citations must always use the `##i$$` format.
+- Any failure to comply with the above rules, including but not limited to format errors, use of prohibited styles, or unsupported citations, will be considered an error and the addition of a citation for that sentence should be skipped.
 
---- 示例 ---
-<SYSTEM>: 以下是知识库:
+--- Example ---
+<SYSTEM>: Here is the knowledge base:
 
-Document: 埃隆·马斯克打破沉默谈加密货币，警告不要全仓狗狗币  ...
+Document: Elon Musk breaks silence on cryptocurrency, warns against going all-in on Dogecoin ...
 URL: https://blockworks.co/news/elon-musk-crypto-dogecoin
 ID: 0
-特斯拉联合创始人建议不要全仓投入 Dogecoin，但埃隆·马斯克表示它仍然是他最喜欢的加密货币...
+The Tesla co-founder advises against putting all your money into Dogecoin, but Elon Musk says it's still his favorite cryptocurrency...
 
-Document: 埃隆·马斯克关于狗狗币的推文引发社交媒体狂热
+Document: Elon Musk's tweet about Dogecoin sparks social media frenzy
 ID: 1
-马斯克表示他“愿意服务”D.O.G.E.——即 Dogecoin 的缩写。
+Musk said he was "willing to serve" D.O.G.E. - the acronym for Dogecoin.
 
-Document: 埃隆·马斯克推文对狗狗币价格的因果影响
+Document: The causal effect of Elon Musk's tweets on the price of Dogecoin
 ID: 2
-如果你想到 Dogecoin——这个基于表情包的加密货币，你就无法不想到埃隆·马斯克...
+If you think of Dogecoin - the meme-based cryptocurrency - you can't help but think of Elon Musk...
 
-Document: 埃隆·马斯克推文点燃狗狗币在公共服务领域的未来前景
+Document: Elon Musk's tweet ignites future prospects for Dogecoin in the public service sector
 ID: 3
-在埃隆·马斯克关于 Dogecoin 的公告后，市场正在升温。这是否意味着加密货币的新纪元？...
+The market is heating up after Elon Musk's announcement about Dogecoin. Does this mean a new era for cryptocurrency?...
 
-    以上是知识库。
+    The above is the knowledge base.
 
-<USER>: 埃隆·马斯克对 Dogecoin 的看法是什么？
+<USER>: What are Elon Musk's views on Dogecoin?
 
-<ASSISTANT>: 马斯克一贯表达了对 Dogecoin 的喜爱，常常提及其幽默感和品牌中狗的元素。他曾表示这是他最喜欢的加密货币 ##0$$ ##1$$。
-最近，马斯克暗示 Dogecoin 未来可能会有新的应用场景。他的推文引发了关于 Dogecoin 可能被整合到公共服务中的猜测 ##3$$。
-总体而言，虽然马斯克喜欢 Dogecoin 并经常推广它，但他也警告不要过度投资，反映了他对其投机性质的既喜爱又谨慎的态度。
+<ASSISTANT>: Musk has consistently expressed his affection for Dogecoin, often mentioning its sense of humor and the dog element in its branding. He has stated that it is his favorite cryptocurrency ##0$$ ##1$$.
+Recently, Musk has hinted that Dogecoin may have new applications in the future. His tweets have sparked speculation that Dogecoin could be integrated into public services ##3$$.
+Overall, while Musk is fond of Dogecoin and often promotes it, he also warns against over-investing, reflecting his dual attitude of affection and caution towards its speculative nature.
 
---- 示例结束 ---
+--- End of Example ---
 
 """
 

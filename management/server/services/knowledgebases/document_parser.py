@@ -26,14 +26,203 @@ from mineru.utils.enum_class import MakeMode
 from . import logger
 from .excel_parser import parse_excel_file
 from .rag_tokenizer import RagTokenizer
+from .korean_tokenizer import KoreanTokenizer
 from .utils import _create_task_record, _update_document_progress, _update_kb_chunk_count, generate_uuid, get_bbox_from_block
+from bs4 import BeautifulSoup
 
 tknzr = RagTokenizer()
+korean_tokenizer = KoreanTokenizer()
 
+# HTML 테이블을 마크다운 테이블로 변환하는 함수
+def html_table_to_markdown(html):
+    soup = BeautifulSoup(html, "html.parser")
+    table = soup.find("table")
+    if not table:
+        return html  # 테이블이 아니면 원본 반환
+
+    rows = table.find_all("tr")
+    md_rows = []
+    for i, row in enumerate(rows):
+        cols = [col.get_text(strip=True) for col in row.find_all(["td", "th"])]
+        md_rows.append("| " + " | ".join(cols) + " |")
+        if i == 0:  # 헤더 다음 구분선
+            md_rows.append("|" + "|".join([" --- "]*len(cols)) + "|")
+    return "\n".join(md_rows)
+
+# HTML 태그 제거 함수 (정규식 사용)
+def html_to_text(html):
+    # <...> 형태의 태그를 모두 제거
+    return re.sub(r'<[^>]+>', ' ', html)
 
 def tokenize_text(text):
     """토크나이저로 텍스트를 토큰화합니다."""
-    return tknzr.tokenize(text)
+    logger.info(f"[Parser-INFO] KoreanTokenizer 사용 전: {text[:100]}")
+    # HTML 태그가 포함된 경우 태그 제거 (정규식 사용)
+    if '<' in text and '>' in text:
+        text = html_to_text(text)
+        # text = tknzr.tokenize(text)
+        # logger.info(f"[Parser-INFO] 기본Tokenizer 사용: {text[:100]}")
+    tokens = korean_tokenizer.tokenize(text)
+    if isinstance(tokens, list):
+        text = ' '.join(tokens)
+        logger.info(f"[Parser-INFO] KoreanTokenizer 사용: {text[:100]}")
+        return text
+    # logger.info(f"[Parser-INFO] 기본Tokenizer 사용 전: {text[:100]}")
+    # logger.info(f"[Parser-INFO] 기본Tokenizer 사용: {text[:100]}")
+    # return text
+
+def merge_title_text_blocks(content_list, block_info_list, middle_json_blocks=None):
+    """
+    middle_json_blocks의 block_type을 사용해서 title 블록과 바로 다음 text 블록을 하나의 청크로 합치는 함수
+    
+    Args:
+        content_list: MinerU pipeline_union_make 결과
+        block_info_list: 블록 정보 리스트 (page_idx, bbox 포함)
+        middle_json_blocks: middle_json에서 추출된 블록 타입 정보 리스트 [{"block_type": "title"}, {"block_type": "text"}, ...]
+    
+    Returns:
+        merged_content_list: 병합된 콘텐츠 리스트
+        merged_block_info_list: 병합된 블록 정보 리스트
+    """
+    merged_content_list = []
+    merged_block_info_list = []
+    skip_next = False
+    title_count = 0
+    text_count = 0
+    merged_count = 0
+    
+    # middle_json_blocks가 있으면 block_type 정보를 사용, 없으면 기존 방식 사용
+    use_middle_json = middle_json_blocks is not None and len(middle_json_blocks) == len(content_list)
+    
+    if use_middle_json:
+        logger.info(f"[Parser-INFO] middle_json block_type 사용: {len(middle_json_blocks)} blocks")
+    else:
+        logger.info(f"[Parser-INFO] content_list type 사용 (middle_json 없음)")
+    
+    for i, chunk_data in enumerate(content_list):
+        # 이전에 병합되어 건너뛸 블록인 경우
+        if skip_next:
+            skip_next = False
+            continue
+        
+        # middle_json_blocks에서 block_type 정보 가져오기
+        if use_middle_json and i < len(middle_json_blocks):
+            current_middle_type = middle_json_blocks[i].get('block_type', '').lower()
+            next_middle_type = middle_json_blocks[i + 1].get('block_type', '').lower() if i + 1 < len(middle_json_blocks) else ''
+            
+            # middle_json_blocks의 block_type을 직접 사용
+            is_title_block = current_middle_type == 'title'
+            is_next_text_block = next_middle_type == 'text' if i + 1 < len(middle_json_blocks) else False
+        else:
+            # 기존 방식: content_list의 type 사용
+            title_types = ["title", "header", "heading", "h1", "h2", "h3", "h4", "h5", "h6"]
+            text_types = ["text", "paragraph", "para"]
+            
+            current_type = chunk_data.get("type", "").lower()
+            next_type = content_list[i + 1].get("type", "").lower() if i + 1 < len(content_list) else ""
+            
+            is_title_block = any(title_type in current_type for title_type in title_types)
+            is_next_text_block = any(text_type in next_type for text_type in text_types) if i + 1 < len(content_list) else False
+        
+        # 블록 타입별 카운트
+        if is_title_block:
+            title_count += 1
+        elif (use_middle_json and i < len(middle_json_blocks) and middle_json_blocks[i].get('block_type', '').lower() == 'text') or \
+             (not use_middle_json and any(text_type in chunk_data.get("type", "").lower() for text_type in ["text", "paragraph", "para"])):
+            text_count += 1
+            
+        # title 블록이고 다음 블록이 text인 경우 병합
+        if (is_title_block and i + 1 < len(content_list) and is_next_text_block):
+            
+            title_chunk = chunk_data
+            text_chunk = content_list[i + 1]
+            
+            # title과 text 내용 병합
+            title_content = title_chunk.get("text", "").strip()
+            text_content = text_chunk.get("text", "").strip()
+            
+            logger.info(f"[Parser-INFO] ✅ Title-Text 병합 발견: idx={i}")
+            
+            # 병합된 내용이 비어있지 않은 경우만 처리
+            if title_content or text_content:
+                merged_content = f"{title_content}\n{text_content}".strip()
+                
+                # 새로운 병합 블록 생성
+                merged_chunk = {
+                    "type": "text",  # 병합된 블록은 text 타입으로 설정
+                    "text": merged_content
+                }
+                
+                # bbox 정보 병합
+                title_bbox = [0, 0, 0, 0]
+                text_bbox = [0, 0, 0, 0]
+                title_page = 0
+                text_page = 0
+                
+                # title 블록의 정보 가져오기
+                if i < len(block_info_list):
+                    title_info = block_info_list[i]
+                    title_page = title_info.get("page_idx", 0)
+                    title_bbox = title_info.get("bbox", [0, 0, 0, 0])
+                
+                # text 블록의 정보 가져오기
+                if i + 1 < len(block_info_list):
+                    text_info = block_info_list[i + 1]
+                    text_page = text_info.get("page_idx", 0)
+                    text_bbox = text_info.get("bbox", [0, 0, 0, 0])
+                
+                # bbox 병합: 두 블록을 포함하는 최소 경계 상자 계산
+                if title_bbox != [0, 0, 0, 0] and text_bbox != [0, 0, 0, 0]:
+                    # 여러 페이지에 걸친 경우 첫 번째 페이지의 bbox 사용
+                    if title_page == text_page:
+                        # 같은 페이지: 두 bbox를 포함하는 경계 상자 계산
+                        merged_bbox = [
+                            min(title_bbox[0], text_bbox[0]),  # x1 최소값
+                            min(title_bbox[1], text_bbox[1]),  # y1 최소값
+                            max(title_bbox[2], text_bbox[2]),  # x2 최대값
+                            max(title_bbox[3], text_bbox[3])   # y2 최대값
+                        ]
+                        merged_page = title_page
+                    else:
+                        # 다른 페이지: 첫 번째 블록(title)의 정보 사용
+                        merged_bbox = title_bbox
+                        merged_page = title_page
+                else:
+                    # bbox 정보가 없는 경우 title 블록 정보 사용
+                    merged_bbox = title_bbox
+                    merged_page = title_page
+                
+                # 병합된 블록 정보 생성
+                merged_block_info = {
+                    "page_idx": merged_page,
+                    "bbox": merged_bbox
+                }
+                
+                merged_content_list.append(merged_chunk)
+                merged_block_info_list.append(merged_block_info)
+                
+                # 다음 텍스트 블록은 건너뛰기
+                skip_next = True
+                merged_count += 1
+                
+                logger.info(f"[Parser-INFO] ✅ Title과 Text 블록 병합 완료: page={merged_page}")
+            else:
+                # 내용이 비어있는 경우 원본 블록들을 개별적으로 추가
+                merged_content_list.append(title_chunk)
+                if i < len(block_info_list):
+                    merged_block_info_list.append(block_info_list[i])
+        else:
+            # title이 아니거나 다음이 text가 아닌 경우 그대로 추가
+            merged_content_list.append(chunk_data)
+            if i < len(block_info_list):
+                merged_block_info_list.append(block_info_list[i])
+            else:
+                # block_info_list가 부족한 경우 기본값 추가
+                merged_block_info_list.append({"page_idx": 0, "bbox": [0, 0, 0, 0]})
+    
+    logger.info(f"[Parser-INFO] 블록 병합 통계: total={len(content_list)}, title={title_count}, text={text_count}, merged={merged_count}")
+    logger.info(f"[Parser-INFO] ✅ 블록 병합 완료: {len(content_list)} -> {len(merged_content_list)} 블록")
+    return merged_content_list, merged_block_info_list
 
 
 @contextmanager
@@ -119,6 +308,7 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
         dict: 파싱 결과가 담긴 딕셔너리 (success, chunk_count).
     """
     temp_pdf_path = None
+    middle_json_data = None  # middle_json 데이터 초기화
     temp_image_dir = None
     start_time = time.time()
 
@@ -229,7 +419,7 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
                     [pdf_bytes],  # 문서 바이트 리스트
                     [lang],       # 언어 리스트
                     parse_method=parse_method,
-                    formula_enable=True,
+                    formula_enable=False,
                     table_enable=True
                 )
             
@@ -250,6 +440,7 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
                     _lang, 
                     _ocr_enable, 
                 )
+                middle_json_data = middle_json  # 병합 함수에서 사용할 데이터 할당
             
                 update_progress(0.8, "내용 추출 중")
                 # PDF 정보 접근
@@ -257,10 +448,21 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
                 # content_list 생성
                 image_dir = os.path.basename(temp_image_dir)
                 content_list = pipeline_union_make(pdf_info, MakeMode.CONTENT_LIST, image_dir)
+                # table 블록을 마크다운으로 변환
+                for chunk in content_list:
+                    if chunk.get("type", "").lower() == "table" and "<table" in chunk.get("text", ""):
+                        chunk["text"] = html_table_to_markdown(chunk["text"])
                 # 중간 JSON 문자열 직접 가져오기
                 middle_json_content = middle_json
                 # 로깅
                 logger.info(f"[Parser-INFO] 문서 처리 완료, 청크 수: {len(content_list)}")
+                
+                # 첫 몇 개 블록의 타입과 내용 샘플 로그
+                for idx, chunk in enumerate(content_list[:10]):  # 처음 10개만 로그
+                    chunk_type = chunk.get("type", "unknown")
+                    chunk_text = chunk.get("text", "")[:100] if chunk.get("text") else ""
+                    logger.info(f"[Parser-INFO] Block[{idx}]: type='{chunk_type}', text='{chunk_text}...'")
+        
         elif file_type.endswith("word") or file_type.endswith("ppt") or file_type.endswith("txt") or file_type.endswith("md") or file_type.endswith("html"):
             update_progress(0.3, f"지원하지 않는 파일 유형: {file_type}")
             raise NotImplementedError(f"파일 유형 '{file_type}'에 대한 파서가 아직 구현되지 않았습니다. MinerU 2.1.0부터는 따로 PDF로 변환 후 처리필요")
@@ -329,6 +531,7 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
                     _lang, 
                     _ocr_enable
                 )
+                middle_json_data = middle_json  # 병합 함수에서 사용할 데이터 할당
                 
                 update_progress(0.8, "내용 추출 중")
                 # PDF 정보 접근
@@ -348,16 +551,31 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
 
         # middle_json_content를 파싱하여 블록 정보 추출
         block_info_list = []
+        middle_json_blocks = []  # merge_title_text_blocks 함수에서 사용할 블록 리스트
         if middle_json_content:
+            if isinstance(middle_json_content, dict):
+                middle_data = middle_json_content  # 바로 할당
+            else:
+                middle_data = None
+                logger.warning(f"[Parser-WARNING] middle_json_content가 예상한 딕셔너리 형식이 아닙니다. 실제 타입: {type(middle_json_content)}.")
             try:
-                if isinstance(middle_json_content, dict):
-                    middle_data = middle_json_content  # 바로 할당
-                else:
-                    middle_data = None
-                    logger.warning(f"[Parser-WARNING] middle_json_content가 예상한 딕셔너리 형식이 아닙니다. 실제 타입: {type(middle_json_content)}.")
+                # middle_json의 블록 타입 분석
+                middle_block_types = {}
+                total_middle_blocks = 0
+                
                 # 정보 추출
                 for page_idx, page_data in enumerate(middle_data.get("pdf_info", [])):
-                    for block in page_data.get("preproc_blocks", []):
+                    page_blocks = page_data.get("preproc_blocks", [])
+                    logger.info(f"[Parser-INFO] Page {page_idx}: {len(page_blocks)} blocks in middle_json")
+                    
+                    for block_idx, block in enumerate(page_blocks):
+                        total_middle_blocks += 1
+                        block_type = block.get("type", "unknown")
+                        middle_block_types[block_type] = middle_block_types.get(block_type, 0) + 1
+                        
+                        # merge_title_text_blocks 함수에서 사용할 블록 정보 추가
+                        middle_json_blocks.append({"block_type": block_type})
+                        
                         block_bbox = get_bbox_from_block(block)
                         # 텍스트가 있고 bbox가 있는 블록만 추출
                         if block_bbox != [0, 0, 0, 0]:
@@ -366,6 +584,8 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
                             logger.warning("[Parser-WARNING] 블록의 bbox 형식이 유효하지 않아 건너뜀.")
 
                     logger.info(f"[Parser-INFO] middle_data에서 {len(block_info_list)}개의 블록 정보를 추출함.")
+                
+                logger.info(f"[Parser-INFO] MiddleJSON 블록 타입 분포 (총 {total_middle_blocks}개): {middle_block_types}")
 
             except json.JSONDecodeError:
                 logger.error("[Parser-ERROR] middle_json_content 파싱 실패.")
@@ -373,6 +593,17 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
             except Exception as e:
                 logger.error(f"[Parser-ERROR] middle_json_content 처리 중 오류: {e}")
                 raise Exception(f"[Parser-ERROR] middle_json_content 처리 중 오류: {e}")
+
+            # Title과 Text 블록 병합 처리
+            if content_list and block_info_list:
+                try:
+                    logger.info(f"[Parser-INFO] Title-Text 블록 병합 시작: {len(content_list)}개 블록")
+                    # middle_json_blocks 사용 (middle_json_content에서 추출된 블록 타입 정보)
+                    middle_blocks_for_merge = middle_json_blocks if 'middle_json_blocks' in locals() and middle_json_blocks else None
+                    content_list, block_info_list = merge_title_text_blocks(content_list, block_info_list, middle_blocks_for_merge)
+                    logger.info(f"[Parser-INFO] Title-Text 블록 병합 완료: {len(content_list)}개 블록")
+                except Exception as e:
+                    logger.warning(f"[Parser-WARNING] Title-Text 블록 병합 중 오류, 원본 사용: {e}")
 
         # 3. 파싱 결과 처리 (MinIO 업로드, ES 저장)
         update_progress(0.95, "파싱 결과 저장 중")
@@ -487,8 +718,8 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config, kb_info):
                     logger.warning(f"[Parser-WARNING] block_info_list 길이({len(block_info_list)})가 content_list 길이({len(content_list)})보다 짧음. 이후 블록은 기본 page_idx와 bbox 사용.")
 
 
-            if chunk_data["type"] == "text" or chunk_data["type"] == "table" or chunk_data["type"] == "equation":
-                if chunk_data["type"] == "text":
+            if chunk_data["type"] == "text" or chunk_data["type"] == "table" or chunk_data["type"] == "equation" or chunk_data["type"] == "title":
+                if chunk_data["type"] == "text" or chunk_data["type"] == "title":
                     content = chunk_data["text"]
                     if not content or not content.strip():
                         continue
