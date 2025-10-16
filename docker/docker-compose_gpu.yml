@@ -10,7 +10,7 @@ services:
     container_name: ragflowplus-server
     ports:
       - ${SVR_HTTP_PORT}:9380
-      - 80:80
+      - 8080:80
       - 443:443
     volumes:
       - ./ragflow-logs:/ragflow/logs
@@ -22,6 +22,11 @@ services:
       - TZ=${TIMEZONE}
       - HF_ENDPOINT=${HF_ENDPOINT}
       - MACOS=${MACOS}
+    cap_drop:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges=true
     networks:
       - ragflow
     restart: on-failure
@@ -41,6 +46,8 @@ services:
     env_file: .env
     environment:
       - API_BASE_URL=/api 
+    security_opt:
+      - no-new-privileges=true
     networks:
       - ragflow
     restart: on-failure
@@ -68,6 +75,11 @@ services:
       - MANAGEMENT_ADMIN_USERNAME=${MANAGEMENT_ADMIN_USERNAME:-admin}
       - MANAGEMENT_ADMIN_PASSWORD=${MANAGEMENT_ADMIN_PASSWORD:-12345678}
       - MANAGEMENT_JWT_SECRET=${MANAGEMENT_JWT_SECRET:-12345678}
+    cap_drop:
+      - SETUID
+      - SETGID
+    security_opt:
+      - no-new-privileges=true
     networks:
       - ragflow
     restart: on-failure
